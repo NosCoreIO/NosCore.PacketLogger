@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>NosCore.DeveloperTools.GfStub</RootNamespace>
+    <!-- 14-char filename, fits the `gf_wrapper.dll` slot in the client's import table
+         (same length → in-place overwrite of the ASCII DLL-name literal). -->
+    <AssemblyName>noscore_gf</AssemblyName>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- NativeAOT x86 shared DLL — drop-in replacement for Gameforge's
+         gf_wrapper.dll so the import table resolves against our stubs. -->
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <PlatformTarget>x86</PlatformTarget>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <StackTraceSupport>false</StackTraceSupport>
+    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+    <!-- ModuleInitializer IS the right tool here: runs on DLL load. -->
+    <NoWarn>$(NoWarn);CA2255</NoWarn>
+  </PropertyGroup>
+
+</Project>

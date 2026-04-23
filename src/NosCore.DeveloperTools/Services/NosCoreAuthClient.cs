@@ -25,7 +25,7 @@ public sealed class NosCoreAuthClient : IDisposable
     {
         var handler = new HttpClientHandler
         {
-            // NosCore devs often run behind a self-signed cert on localhost:5001.
+            // NosCore WebApi ships with a self-signed dev cert on localhost:7001.
             ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
         };
         _http = new HttpClient(handler) { BaseAddress = new Uri(baseAddress.TrimEnd('/') + "/") };

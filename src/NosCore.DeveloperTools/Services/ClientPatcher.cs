@@ -9,6 +9,13 @@ namespace NosCore.DeveloperTools.Services;
 /// and defaults unknown args into the Entwell standalone body while
 /// leaving the <c>gf</c> / <c>gftest</c> GF-mode branches untouched.
 /// </summary>
+public enum EntryPatchMode
+{
+    DefaultToEntwell,
+    OnlyEntwell,
+    None,
+}
+
 public static class ClientPatcher
 {
     public sealed record PatchResult(bool Success, string Log);
@@ -113,11 +120,20 @@ public static class ClientPatcher
     ///
     ///   B9 14 00 00 00  BA 01 00 00 00  E8 ?? ?? ?? ??   ; mov ecx,14 / mov edx,1 / call
     ///   8B 45 CC  BA ?? ?? ?? ??  E8 ?? ?? ?? ??          ; load arg / load "EntwellNostaleClient" / call cmp
-    ///   0F 85                                              ; JNZ — we overwrite these 6 bytes
+    ///   0F 85                                              ; JNZ rel32 (6 bytes with the rel32 following)
     ///
-    /// The JNZ (pattern offset 28) branches to a cleanup block on mismatch
-    /// and exits the process. Replace its 6 bytes with NOPs so mismatches
-    /// fall through into the Entwell body.
+    /// An earlier version NOPped just the JNZ so mismatches fell through
+    /// into the Entwell body, but the two <c>call</c>s before the JNZ have
+    /// side effects (ref-counted AnsiString setup + case-folded compare)
+    /// that the match-case naturally balances at shutdown and the
+    /// fall-through case doesn't — producing a timing-sensitive
+    /// <c>EOSError 1400 / Invalid window handle</c> on close.
+    ///
+    /// Instead, skip the whole compare block: overwrite bytes
+    /// [pattern_start, pattern_start+34) — pattern + trailing JNZ rel32 —
+    /// with a short <c>JMP +32</c> and NOP padding, landing exactly on the
+    /// first instruction of the Entwell body. The side-effectful calls
+    /// never run on our path, so shutdown balances cleanly.
     /// </summary>
     public static PatchResult PatchDefaultToEntwell(byte[] bytes)
     {
@@ -130,11 +146,57 @@ public static class ClientPatcher
             return new PatchResult(false, "Default-to-Entwell pattern not found.");
         }
 
-        var jnzOffset = offset + 28;
-        for (var i = 0; i < 6; i++) bytes[jnzOffset + i] = 0x90;
+        // EB 20 = short JMP, rel8 = +32, so next_ip (offset+2) + 32 = offset+34
+        // which is the first byte after the original JNZ rel32 = Entwell body entry.
+        bytes[offset + 0] = 0xEB;
+        bytes[offset + 1] = 0x20;
+        for (var i = 2; i < 34; i++) bytes[offset + i] = 0x90;
 
         return new PatchResult(true,
-            $"Default-to-Entwell: NOPped JNZ at 0x{jnzOffset:X} — any non-gf/gftest launch now falls into the Entwell body.");
+            $"Default-to-Entwell: JMP +32 over compare block at 0x{offset:X} — any non-gf/gftest launch skips straight into the Entwell body.");
+    }
+
+    /// <summary>
+    /// Force the client into the Entwell standalone body unconditionally,
+    /// regardless of command-line args. Replaces the early-entry argc
+    /// <c>JL</c> with an unconditional <c>JMP</c> straight to the Entwell
+    /// body (located via the <see cref="PatchDefaultToEntwell"/> pattern
+    /// + 34). Skips the <c>gf</c> / <c>gftest</c> / <c>EntwellNostaleClient</c>
+    /// compares entirely — so <c>gf</c> mode stops working — but avoids
+    /// the timing-sensitive shutdown crash that both NOP-and-JMP variants
+    /// of <see cref="PatchDefaultToEntwell"/> trigger when any of those
+    /// compares runs beforehand.
+    /// </summary>
+    public static PatchResult PatchForceEntwell(byte[] bytes)
+    {
+        const string entwellPattern =
+            "B9 14 00 00 00 BA 01 00 00 00 E8 ? ? ? ? 8B 45 CC BA ? ? ? ? E8 ? ? ? ? 0F 85";
+        const string argcPattern = "E8 ? ? ? ? E8 ? ? ? ? 48 0F 8C";
+
+        var entwellBlock = FindPattern(bytes, entwellPattern, 0);
+        if (entwellBlock < 0)
+        {
+            return new PatchResult(false, "Force-Entwell: default-to-Entwell anchor pattern not found.");
+        }
+        var argcBlock = FindPattern(bytes, argcPattern, 0);
+        if (argcBlock < 0)
+        {
+            return new PatchResult(false, "Force-Entwell: argc-gate anchor pattern not found.");
+        }
+
+        var entwellBody = entwellBlock + 34;
+        var jlOffset = argcBlock + 11;
+        // Overwrite `0F 8C rel32` (6 bytes) with `E9 rel32 90` (JMP rel32 + NOP).
+        var rel32 = entwellBody - (jlOffset + 5);
+        bytes[jlOffset + 0] = 0xE9;
+        bytes[jlOffset + 1] = (byte)rel32;
+        bytes[jlOffset + 2] = (byte)(rel32 >> 8);
+        bytes[jlOffset + 3] = (byte)(rel32 >> 16);
+        bytes[jlOffset + 4] = (byte)(rel32 >> 24);
+        bytes[jlOffset + 5] = 0x90;
+
+        return new PatchResult(true,
+            $"Force-Entwell: JMP at 0x{jlOffset:X} → Entwell body 0x{entwellBody:X} (rel32=0x{rel32:X}). `gf` mode will no longer work.");
     }
 
     /// <summary>
@@ -169,6 +231,35 @@ public static class ClientPatcher
 
         return new PatchResult(true,
             $"Allow-no-arg: NOPped JL at 0x{jlOffset:X} — the argc gate no longer aborts on zero-arg launches.");
+    }
+
+    /// <summary>
+    /// Rewrite the ASCII DLL-name literal <c>gf_wrapper.dll</c> in the PE
+    /// import directory to <c>noscore_gf.dll</c>. The Windows loader
+    /// resolves imports by that literal, so the patched client loads our
+    /// NativeAOT stub DLL (shipped next to the patched exe) instead of
+    /// the real Gameforge wrapper. Both names are 14 ASCII characters +
+    /// one NUL terminator, so we can overwrite in place with no further
+    /// PE edits.
+    /// </summary>
+    public static PatchResult PatchImportName(byte[] bytes)
+    {
+        var needle = Encoding.ASCII.GetBytes("gf_wrapper.dll\0");
+        var replacement = Encoding.ASCII.GetBytes("noscore_gf.dll\0");
+        if (needle.Length != replacement.Length)
+        {
+            return new PatchResult(false, "Internal error: replacement DLL name must match original length.");
+        }
+
+        var offset = FindBytes(bytes, needle, 0);
+        if (offset < 0)
+        {
+            return new PatchResult(false, "Import name 'gf_wrapper.dll' not found.");
+        }
+        for (var i = 0; i < replacement.Length; i++) bytes[offset + i] = replacement[i];
+
+        return new PatchResult(true,
+            $"Import rename: 'gf_wrapper.dll' -> 'noscore_gf.dll' at 0x{offset:X}. Drop noscore_gf.dll next to the patched exe.");
     }
 
     private static int FindBytes(byte[] haystack, byte[] needle, int startOffset)

@@ -1,3 +1,5 @@
+using NosCore.DeveloperTools.Services;
+
 namespace NosCore.DeveloperTools.Models;
 
 public sealed class AppSettings
@@ -13,11 +15,20 @@ public sealed class AppSettings
     public AuthSettings Auth { get; set; } = new();
 
     public ClientCreatorSettings ClientCreator { get; set; } = new();
+
+    public NosMallSettings NosMall { get; set; } = new();
+}
+
+public sealed class NosMallSettings
+{
+    public string SourceDir { get; set; } = string.Empty;
+
+    public string NewUrl { get; set; } = "https://localhost:7001/Mall";
 }
 
 public sealed class AuthSettings
 {
-    public string ServerUrl { get; set; } = "https://localhost:5001";
+    public string ServerUrl { get; set; } = "https://localhost:7001";
 
     public string Username { get; set; } = string.Empty;
 
@@ -35,6 +46,8 @@ public sealed class ClientCreatorSettings
     public string ClientExePath { get; set; } = string.Empty;
 
     public string OutputName { get; set; } = string.Empty;
+
+    public EntryPatchMode EntryPatchMode { get; set; } = EntryPatchMode.DefaultToEntwell;
 }
 
 public sealed class PacketFilters

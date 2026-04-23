@@ -8,7 +8,6 @@ namespace NosCore.DeveloperTools.Forms;
 
 public sealed class MainForm : Form
 {
-    private GameforgePipeServer? _pipeServer;
     private readonly SettingsService _settingsService;
     private readonly ProcessService _processService;
     private readonly IInjectionService _injection;
@@ -113,6 +112,7 @@ public sealed class MainForm : Form
         };
         tabs.TabPages.Add(BuildPacketsTab());
         tabs.TabPages.Add(BuildClientCreatorTab());
+        tabs.TabPages.Add(BuildNosMallTab());
         tabs.TabPages.Add(BuildAuthTab());
         tabs.TabPages.Add(BuildAboutTab());
         Controls.Add(tabs);
@@ -240,6 +240,133 @@ public sealed class MainForm : Form
     }
 
 
+    private TabPage BuildNosMallTab()
+    {
+        var page = new TabPage("NosMall");
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 4,
+            Padding = new Padding(10),
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        for (var i = 0; i < 4; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var nm = _settings.NosMall;
+        var sourceBox = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, Text = nm.SourceDir };
+        var urlBox = new TextBox { Dock = DockStyle.Fill, Text = nm.NewUrl };
+        var browseSource = new Button { Text = "Browse…", AutoSize = true };
+        var patchButton = new Button { Text = "Patch all", AutoSize = true };
+        var logBox = new TextBox
+        {
+            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
+            Dock = DockStyle.Fill, Font = new Font(FontFamily.GenericMonospace, 9F), Height = 220,
+        };
+
+        layout.Controls.Add(new Label { Text = "NostaleData dir:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
+        layout.Controls.Add(sourceBox, 1, 0);
+        layout.Controls.Add(browseSource, 2, 0);
+        layout.Controls.Add(new Label { Text = "New base URL:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
+        layout.Controls.Add(urlBox, 1, 1);
+        layout.SetColumnSpan(urlBox, 2);
+
+        var btnRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill };
+        btnRow.Controls.Add(patchButton);
+        layout.Controls.Add(btnRow, 0, 2);
+        layout.SetColumnSpan(btnRow, 3);
+        layout.Controls.Add(logBox, 0, 3);
+        layout.SetColumnSpan(logBox, 3);
+
+        void PersistNm()
+        {
+            _settings.NosMall.SourceDir = sourceBox.Text;
+            _settings.NosMall.NewUrl = urlBox.Text;
+            Persist();
+        }
+
+        browseSource.Click += (_, _) =>
+        {
+            using var dialog = new FolderBrowserDialog
+            {
+                Description = "Pick the NostaleData folder containing NScliData_*.NOS",
+                ShowNewFolderButton = false,
+                UseDescriptionForTitle = true,
+                SelectedPath = string.IsNullOrEmpty(sourceBox.Text) ? "" : sourceBox.Text,
+            };
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                sourceBox.Text = dialog.SelectedPath;
+                PersistNm();
+            }
+        };
+        urlBox.TextChanged += (_, _) => PersistNm();
+
+        patchButton.Click += (_, _) =>
+        {
+            logBox.Clear();
+            void Log(string msg) => logBox.AppendText(msg + Environment.NewLine);
+
+            if (string.IsNullOrWhiteSpace(sourceBox.Text) || !Directory.Exists(sourceBox.Text))
+            {
+                Log("Pick the NostaleData folder first.");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(urlBox.Text))
+            {
+                Log("Enter the replacement URL.");
+                return;
+            }
+
+            var files = Directory.GetFiles(sourceBox.Text, "NScliData_*.NOS", SearchOption.TopDirectoryOnly);
+            if (files.Length == 0)
+            {
+                Log($"No NScliData_*.NOS files found under {sourceBox.Text}.");
+                return;
+            }
+
+            var url = urlBox.Text.Trim();
+            var totalFiles = 0;
+            foreach (var path in files)
+            {
+                var name = Path.GetFileName(path);
+                Log($"--- {name} ---");
+                byte[] bytes;
+                try { bytes = File.ReadAllBytes(path); }
+                catch (Exception ex) { Log($"  read failed: {ex.Message}"); continue; }
+
+                var result = NosMallUrlPatcher.Patch(bytes, url);
+                foreach (var line in result.Log.TrimEnd().Split(Environment.NewLine))
+                {
+                    Log("  " + line);
+                }
+                if (!result.Success || result.Output is null) continue;
+
+                // Back up the pristine original on first patch; leave an
+                // existing .old alone so repeated patches don't overwrite
+                // the clean copy with an already-patched one.
+                var backup = path + ".old";
+                if (!File.Exists(backup))
+                {
+                    try { File.Copy(path, backup); Log($"  backup: {Path.GetFileName(backup)}"); }
+                    catch (Exception ex) { Log($"  backup failed (aborting file): {ex.Message}"); continue; }
+                }
+                try { File.WriteAllBytes(path, result.Output); }
+                catch (Exception ex) { Log($"  write failed: {ex.Message}"); continue; }
+                Log($"  wrote {name} in place");
+                totalFiles++;
+            }
+            Log("");
+            Log($"Done. Patched {totalFiles}/{files.Length} archive(s). Original copies kept with .old suffix.");
+        };
+
+        page.Controls.Add(layout);
+        return page;
+    }
+
     private TabPage BuildClientCreatorTab()
     {
         var page = new TabPage("Client creator");
@@ -248,13 +375,13 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            RowCount = 5,
+            RowCount = 6,
             Padding = new Padding(10),
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        for (var i = 0; i < 5; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (var i = 0; i < 6; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var cc = _settings.ClientCreator;
         var newAddressBox = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "e.g. 192.168.1.50", Text = cc.NewAddress };
@@ -262,6 +389,17 @@ public sealed class MainForm : Form
         var outputNameBox = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "(auto-filled once you pick an exe)", Text = cc.OutputName };
         var browseButton = new Button { Text = "Browse…", AutoSize = true };
         var patchButton = new Button { Text = "Patch", AutoSize = true };
+
+        var modeOptions = new (EntryPatchMode Mode, string Label)[]
+        {
+            (EntryPatchMode.DefaultToEntwell, "Default to EntwellNostaleClient (gf still works, but exits with EOSError 1400)"),
+            (EntryPatchMode.OnlyEntwell,      "Only EntwellNostaleClient (force Entwell always, gf no longer works, clean exit)"),
+            (EntryPatchMode.None,             "No parameter patch (double-click does nothing; must pass argv manually)"),
+        };
+        var modeCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        foreach (var (_, label) in modeOptions) modeCombo.Items.Add(label);
+        modeCombo.SelectedIndex = Array.FindIndex(modeOptions, o => o.Mode == cc.EntryPatchMode);
+        if (modeCombo.SelectedIndex < 0) modeCombo.SelectedIndex = 0;
         var logBox = new TextBox
         {
             Multiline = true,
@@ -284,6 +422,10 @@ public sealed class MainForm : Form
         layout.Controls.Add(outputNameBox, 1, 2);
         layout.SetColumnSpan(outputNameBox, 2);
 
+        layout.Controls.Add(new Label { Text = "Entry patch:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
+        layout.Controls.Add(modeCombo, 1, 3);
+        layout.SetColumnSpan(modeCombo, 2);
+
         var buttonRow = new FlowLayoutPanel
         {
             AutoSize = true,
@@ -291,10 +433,10 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
         };
         buttonRow.Controls.Add(patchButton);
-        layout.Controls.Add(buttonRow, 0, 3);
+        layout.Controls.Add(buttonRow, 0, 4);
         layout.SetColumnSpan(buttonRow, 3);
 
-        layout.Controls.Add(logBox, 0, 4);
+        layout.Controls.Add(logBox, 0, 5);
         layout.SetColumnSpan(logBox, 3);
 
         browseButton.Click += (_, _) =>
@@ -323,18 +465,24 @@ public sealed class MainForm : Form
         newAddressBox.TextChanged += (_, _) => PersistCreator();
         exeBox.TextChanged += (_, _) => PersistCreator();
         outputNameBox.TextChanged += (_, _) => PersistCreator();
+        modeCombo.SelectedIndexChanged += (_, _) =>
+        {
+            _settings.ClientCreator.EntryPatchMode = modeOptions[modeCombo.SelectedIndex].Mode;
+            Persist();
+        };
 
         patchButton.Click += (_, _) =>
         {
             logBox.Clear();
-            RunPatch(newAddressBox.Text.Trim(), exeBox.Text.Trim(), outputNameBox.Text.Trim(), logBox);
+            var mode = modeOptions[modeCombo.SelectedIndex].Mode;
+            RunPatch(newAddressBox.Text.Trim(), exeBox.Text.Trim(), outputNameBox.Text.Trim(), mode, logBox);
         };
 
         page.Controls.Add(layout);
         return page;
     }
 
-    private static void RunPatch(string newAddress, string exePath, string outputName, TextBox logBox)
+    private static void RunPatch(string newAddress, string exePath, string outputName, EntryPatchMode mode, TextBox logBox)
     {
         void Log(string msg) => logBox.AppendText(msg + Environment.NewLine);
 
@@ -369,15 +517,25 @@ public sealed class MainForm : Form
         Log(ipResult.Log);
         if (!ipResult.Success) return;
 
-        var argcResult = ClientPatcher.PatchAllowNoArg(bytes);
-        Log(argcResult.Log);
-        // Non-fatal if the pattern doesn't match — still write out the IP-patched binary.
+        switch (mode)
+        {
+            case EntryPatchMode.DefaultToEntwell:
+                Log(ClientPatcher.PatchAllowNoArg(bytes).Log);
+                Log(ClientPatcher.PatchDefaultToEntwell(bytes).Log);
+                break;
+            case EntryPatchMode.OnlyEntwell:
+                Log(ClientPatcher.PatchForceEntwell(bytes).Log);
+                break;
+            case EntryPatchMode.None:
+                Log("No parameter patch: exe is unmodified on the entry path.");
+                break;
+        }
 
-        var entwellResult = ClientPatcher.PatchDefaultToEntwell(bytes);
-        Log(entwellResult.Log);
-        // Non-fatal if the pattern doesn't match on an older/newer build.
+        var stubResult = ClientPatcher.PatchImportName(bytes);
+        Log(stubResult.Log);
 
-        var outPath = Path.Combine(Path.GetDirectoryName(exePath) ?? ".", outputName);
+        var outDir = Path.GetDirectoryName(exePath) ?? ".";
+        var outPath = Path.Combine(outDir, outputName);
         if (string.Equals(Path.GetFullPath(outPath), Path.GetFullPath(exePath), StringComparison.OrdinalIgnoreCase))
         {
             Log("Refusing to overwrite the source exe — change the output filename.");
@@ -395,6 +553,26 @@ public sealed class MainForm : Form
         }
 
         Log($"Wrote {outPath}");
+
+        // Drop our gf_wrapper stub next to the patched exe. The import-name
+        // rewrite above points the exe at 'noscore_gf.dll' so we don't
+        // clobber the original.
+        if (stubResult.Success)
+        {
+            var stubPath = Path.Combine(outDir, "noscore_gf.dll");
+            try
+            {
+                using var stubStream = typeof(MainForm).Assembly.GetManifestResourceStream("noscore_gf.dll")
+                    ?? throw new FileNotFoundException("Stub DLL not embedded in this build.");
+                using var outStream = File.Create(stubPath);
+                stubStream.CopyTo(outStream);
+                Log($"Wrote {stubPath}");
+            }
+            catch (Exception ex)
+            {
+                Log($"Stub DLL deploy failed: {ex.Message}");
+            }
+        }
     }
 
     private TabPage BuildAuthTab()
@@ -423,24 +601,8 @@ public sealed class MainForm : Form
             Multiline = true, ReadOnly = true, Dock = DockStyle.Fill,
             ScrollBars = ScrollBars.Vertical, Font = new Font(FontFamily.GenericMonospace, 9F),
         };
-        var pipeLog = new TextBox
-        {
-            Multiline = true, ReadOnly = true, Dock = DockStyle.Fill,
-            ScrollBars = ScrollBars.Vertical, Font = new Font(FontFamily.GenericMonospace, 9F),
-        };
-        var logSplit = new SplitContainer
-        {
-            Dock = DockStyle.Fill,
-            Orientation = Orientation.Horizontal,
-        };
         var httpPanel = new GroupBox { Text = "HTTP (NosCore auth)", Dock = DockStyle.Fill, Padding = new Padding(4) };
         httpPanel.Controls.Add(httpLog);
-        var pipePanel = new GroupBox { Text = "Pipe (GameforgeClientJSONRPC)", Dock = DockStyle.Fill, Padding = new Padding(4) };
-        pipePanel.Controls.Add(pipeLog);
-        logSplit.Panel1.Controls.Add(httpPanel);
-        logSplit.Panel2.Controls.Add(pipePanel);
-        var injectBox = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Custom JSON-RPC message to push on the pipe" };
-        var injectBtn = new Button { Text = "Send", AutoSize = true };
 
         AuthResult? authResult = null;
 
@@ -487,24 +649,10 @@ public sealed class MainForm : Form
         AddRow(L(""), actionRow, null, null);
 
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.Controls.Add(logSplit, 0, root.RowCount);
-        root.SetColumnSpan(logSplit, 4);
+        root.Controls.Add(httpPanel, 0, root.RowCount);
+        root.SetColumnSpan(httpPanel, 4);
         root.RowCount++;
 
-        var injectRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
-        injectRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        injectRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        injectRow.Controls.Add(injectBox, 0, 0);
-        injectRow.Controls.Add(injectBtn, 1, 0);
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.Controls.Add(injectRow, 0, root.RowCount);
-        root.SetColumnSpan(injectRow, 4);
-        root.RowCount++;
-
-        void LogPipe(string line) => BeginInvoke(() =>
-        {
-            pipeLog.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {line}{Environment.NewLine}");
-        });
         void LogHttp(string line) => BeginInvoke(() =>
         {
             httpLog.AppendText($"[{DateTime.Now:HH:mm:ss.fff}] {line}{Environment.NewLine}");
@@ -539,28 +687,8 @@ public sealed class MainForm : Form
             }
         };
 
-        async Task StopPipe()
-        {
-            var server = _pipeServer;
-            _pipeServer = null;
-            if (server is not null)
-            {
-                await server.DisposeAsync();
-                LogPipe("Pipe server stopped.");
-            }
-            primaryBtn.Text = "Sign in && launch";
-        }
-
         primaryBtn.Click += async (_, _) =>
         {
-            if (_pipeServer is not null)
-            {
-                primaryBtn.Enabled = false;
-                await StopPipe();
-                primaryBtn.Enabled = true;
-                return;
-            }
-
             primaryBtn.Enabled = false;
             try
             {
@@ -571,7 +699,7 @@ public sealed class MainForm : Form
                 }
                 if (string.IsNullOrWhiteSpace(clientExeBox.Text) || !File.Exists(clientExeBox.Text))
                 {
-                    LogPipe("Pick the NosTale client exe first.");
+                    LogHttp("Pick the NosTale client exe first.");
                     return;
                 }
 
@@ -583,28 +711,14 @@ public sealed class MainForm : Form
                     CancellationToken.None);
                 LogHttp($"Auth ok. account={authResult.PlatformGameAccountId} code={authResult.AuthCode}");
 
-                var sessionId = Guid.NewGuid().ToString();
-                _pipeServer = new GameforgePipeServer(
-                    sessionId,
-                    authResult.AuthCode,
-                    userBox.Text.Trim(),
-                    authResult.PlatformGameAccountId,
-                    region.ToString(),
-                    localeBox.Text.Trim(),
-                    LogPipe);
-                _pipeServer.Start();
-
                 if (skipLaunchBox.Checked)
                 {
-                    LogPipe("Skip-launch mode: pipe is live, start the client manually.");
-                    LogPipe($"  _TNT_CLIENT_APPLICATION_ID=d3b2a0c1-f0d0-4888-ae0b-1c5e1febdafb");
-                    LogPipe($"  _TNT_SESSION_ID={sessionId}");
-                    LogPipe($"  \"{clientExeBox.Text}\" gf {(int)region}");
-                    LogPipe("In cmd.exe:");
-                    LogPipe($"  set _TNT_CLIENT_APPLICATION_ID=d3b2a0c1-f0d0-4888-ae0b-1c5e1febdafb");
-                    LogPipe($"  set _TNT_SESSION_ID={sessionId}");
-                    LogPipe($"  \"C:\\path\\to\\x32dbg.exe\" \"{clientExeBox.Text}\" gf {(int)region}");
-                    primaryBtn.Text = "Stop pipe";
+                    LogHttp("Skip-launch mode: env vars are below. Start the client yourself.");
+                    LogHttp($"  _NC_AUTH_CODE={authResult.AuthCode}");
+                    LogHttp($"  \"{clientExeBox.Text}\" gf {(int)region}");
+                    LogHttp("In cmd.exe:");
+                    LogHttp($"  set _NC_AUTH_CODE={authResult.AuthCode}");
+                    LogHttp($"  \"C:\\path\\to\\x32dbg.exe\" \"{clientExeBox.Text}\" gf {(int)region}");
                     return;
                 }
 
@@ -617,38 +731,19 @@ public sealed class MainForm : Form
                     WorkingDirectory = Path.GetDirectoryName(clientExeBox.Text) ?? Environment.CurrentDirectory,
                     UseShellExecute = false,
                 };
-                psi.EnvironmentVariables["_TNT_CLIENT_APPLICATION_ID"] = "d3b2a0c1-f0d0-4888-ae0b-1c5e1febdafb";
-                psi.EnvironmentVariables["_TNT_SESSION_ID"] = sessionId;
+                psi.EnvironmentVariables["_NC_AUTH_CODE"] = authResult.AuthCode;
 
                 var proc = Process.Start(psi);
-                LogPipe($"Started client pid={proc?.Id} with session {sessionId}");
-                primaryBtn.Text = "Stop pipe";
+                LogHttp($"Started client pid={proc?.Id}");
             }
             catch (Exception ex)
             {
                 LogHttp($"Failed: {ex.Message}");
-                await StopPipe();
             }
             finally
             {
                 primaryBtn.Enabled = true;
             }
-        };
-
-        injectBtn.Click += (_, _) =>
-        {
-            if (_pipeServer is null || !_pipeServer.IsConnected)
-            {
-                LogPipe("No pipe client connected.");
-                return;
-            }
-            var line = injectBox.Text;
-            if (string.IsNullOrEmpty(line)) return;
-            _pipeServer.SendLine(line);
-        };
-        injectBox.KeyDown += (_, e) =>
-        {
-            if (e.KeyCode == Keys.Enter) { injectBtn.PerformClick(); e.SuppressKeyPress = true; }
         };
 
         page.Controls.Add(root);
