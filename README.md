@@ -24,7 +24,11 @@ This is an independent and unofficial tool for educational use ONLY. Using the P
 - Custom packet inject — send / receive synthetic packets through the client's own send/recv functions using a Delphi register-convention invoker thunk + a hand-rolled Delphi AnsiString.
 
 ### Client Creator
-- Points at a copy of `NosCore.exe`, rewrites the embedded login-server address (Delphi AnsiString header auto-detected — no text IP search), flips the multi-instance `JL` check into an unconditional `JMP` so multiple clients can run side by side, and writes the patched binary to a user-chosen filename.
+Point it at a copy of `NostaleClientX.exe`, pick a new server address and output filename, hit **Patch**. The output binary gets three edits:
+
+1. **Server address** — the client stores the login server as a Delphi constant AnsiString in its `.rdata`. We auto-detect the slot by shape (refcount-`-1` header + IP-looking payload, no text search), overwrite the payload, and rewrite the length prefix at offset `-4`.
+2. **Allow no-arg launches** — the entry point calls `ParamCount`, decrements, and `JL`s to the exit path on a negative result. That gate aborts double-click launches. We NOP the 6-byte `JL rel32` so execution flows into the arg dispatcher regardless of argc.
+3. **Default to Entwell mode** — the arg dispatcher compares `argv[1]` against `"gf"` / `"gftest"` / `"EntwellNostaleClient"` (in that order) and `JNZ`s to exit when none match. We NOP that last `JNZ`, so any non-`gf` / non-`gftest` launch (including empty) falls into the Entwell standalone body. The `gf` / `gftest` branches are untouched — passing `gf <N>` still routes through GF mode as the real Gameforge launcher would trigger.
 
 ## ⚠️ Windows Defender
 
@@ -36,7 +40,7 @@ you need to exclude the install folder:
 
 ```powershell
 # Run once as admin
-Add-MpPreference -ExclusionPath 'C:\path\to\where\you\put\NosCore.PacketLogger.exe'
+Add-MpPreference -ExclusionPath 'C:\path\to\where\you\put\NosCore.DeveloperTools.exe'
 ```
 
 Same story for the project directory if you're building from source:
@@ -46,11 +50,11 @@ Same story for the project directory if you're building from source:
 
 The usual pattern is to inject a managed .NET DLL into the client and — because NosTale is Delphi (no CLR in-process) — ship a native shim (typically `nethost.dll` + CoreCLR hosting code, sometimes C++/CLI) to start the runtime before the managed code can run. That brings a native dependency and a framework-runtime requirement on the target machine.
 
-We publish the hook DLL with [`PublishAot`](src/NosCore.PacketLogger.Hook/NosCore.PacketLogger.Hook.csproj) instead. The C# code compiles straight to native x86 machine code — no CLR, no JIT, no runtime install — and drops to ~620 KB. The bootstrap is just `CreateRemoteThread(target, LoadLibraryW, hookDllPath)`; `DllMain` runs native code immediately, an exported init function is called right after to spawn the worker thread, and we're live. Zero lines of C++ in the repo.
+We publish the hook DLL with [`PublishAot`](src/NosCore.DeveloperTools.Hook/NosCore.DeveloperTools.Hook.csproj) instead. The C# code compiles straight to native x86 machine code — no CLR, no JIT, no runtime install — and drops to ~620 KB. The bootstrap is just `CreateRemoteThread(target, LoadLibraryW, hookDllPath)`; `DllMain` runs native code immediately, an exported init function is called right after to spawn the worker thread, and we're live. Zero lines of C++ in the repo.
 
 ## Signatures
 
-Byte-pattern signatures for the send/recv entry points live in [src/NosCore.PacketLogger.Hook/Signatures.cs](src/NosCore.PacketLogger.Hook/Signatures.cs). Client patches drift prologue bytes over time; when a signature stops matching, re-reverse the prologue (x32dbg → hardware breakpoint on a known packet string → step back to the caller's prologue) and bump the constants.
+Byte-pattern signatures for the send/recv entry points live in [src/NosCore.DeveloperTools.Hook/Signatures.cs](src/NosCore.DeveloperTools.Hook/Signatures.cs). Client patches drift prologue bytes over time; when a signature stops matching, re-reverse the prologue (x32dbg → hardware breakpoint on a known packet string → step back to the caller's prologue) and bump the constants.
 
 For a walkthrough of the exact recipe we used (via x32dbg + the x64dbg MCP, tracing from `ws2_32.*` into the connection object's virtual handler slots), see [docs/finding-hooks.md](docs/finding-hooks.md). Re-run that process any time a client patch invalidates an existing signature or you need to instrument a new phase of the client (character select, a subsystem, etc.).
 
@@ -65,10 +69,10 @@ dotnet build
 Produce a self-contained single `.exe`:
 
 ```
-dotnet publish src/NosCore.PacketLogger -c Release -r win-x86 --self-contained -p:PublishSingleFile=true -o ./publish
+dotnet publish src/NosCore.DeveloperTools -c Release -r win-x86 --self-contained -p:PublishSingleFile=true -o ./publish
 ```
 
-Output: `./publish/NosCore.PacketLogger.exe`.
+Output: `./publish/NosCore.DeveloperTools.exe`.
 
 ## Contributing ##
 

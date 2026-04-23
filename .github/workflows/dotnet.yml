@@ -19,7 +19,7 @@ jobs:
 
       - name: Publish single-file exe
         run: >
-          dotnet publish src/NosCore.PacketLogger/NosCore.PacketLogger.csproj
+          dotnet publish src/NosCore.DeveloperTools/NosCore.DeveloperTools.csproj
           -c Release -r win-x86 --self-contained
           -p:PublishSingleFile=true
           -o ./publish
@@ -27,8 +27,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NosCore.PacketLogger-win-x86
-          path: publish/NosCore.PacketLogger.exe
+          name: NosCore.DeveloperTools-win-x86
+          path: publish/NosCore.DeveloperTools.exe
           if-no-files-found: error
 
   release:
@@ -48,7 +48,7 @@ jobs:
 
       - name: Publish single-file exe
         run: >
-          dotnet publish src/NosCore.PacketLogger/NosCore.PacketLogger.csproj
+          dotnet publish src/NosCore.DeveloperTools/NosCore.DeveloperTools.csproj
           -c Release -r win-x86 --self-contained
           -p:PublishSingleFile=true
           -o ./publish
@@ -66,7 +66,7 @@ jobs:
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
-          files: publish/NosCore.PacketLogger.exe
+          files: publish/NosCore.DeveloperTools.exe
           prerelease: false
           make_latest: true
         env:

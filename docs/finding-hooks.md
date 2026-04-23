@@ -1,6 +1,6 @@
 # Finding hook points in the NosTale client
 
-This doc explains how we find the spots in `NosCore.exe` where we intercept cleartext packets. We currently hook three of them — world send, world recv, login recv — and they all go through the same trampoline machinery. What differs is *where* the trampoline reads the packet pointer from (a register for world, a stack local for login).
+This doc explains how we find the spots in `NostaleClientX.exe` where we intercept cleartext packets. We currently hook three of them — world send, world recv, login recv — and they all go through the same trampoline machinery. What differs is *where* the trampoline reads the packet pointer from (a register for world, a stack local for login).
 
 We use **x32dbg** with the [Wasdubya x64dbg MCP](https://github.com/Wasdubya/x64dbgMCP) plugin so an LLM session can read registers, set breakpoints, and disassemble on command. You can follow the same steps by hand in x32dbg's UI — the MCP is just faster.
 
@@ -11,7 +11,7 @@ We use **x32dbg** with the [Wasdubya x64dbg MCP](https://github.com/Wasdubya/x64
 A few concepts that come up repeatedly:
 
 - **NosTale is 32-bit (x86), written in Delphi.** ImageBase is `0x400000`, no ASLR, so every address in this doc is stable across launches of the same client build.
-- **Packet strings are Delphi `AnsiString`.** When the game code holds one it holds a pointer `P` to the payload bytes; the length lives 4 bytes *before* the payload (`*(int*)(P-4)`). That's all our [`DelphiString.Read`](../src/NosCore.PacketLogger.Hook/DelphiString.cs) needs.
+- **Packet strings are Delphi `AnsiString`.** When the game code holds one it holds a pointer `P` to the payload bytes; the length lives 4 bytes *before* the payload (`*(int*)(P-4)`). That's all our [`DelphiString.Read`](../src/NosCore.DeveloperTools.Hook/DelphiString.cs) needs.
 - **Delphi's fastcall convention:** first three arguments go in `ECX`, `EDX`, `EAX` (in that order). Any remaining args are pushed on the stack. When the client has a per-packet cleartext handler, the packet string pointer consistently arrives in `EDX`.
 - **An inline detour is a 5-byte `JMP rel32` (opcode `E9 xx xx xx xx`)** we patch into the target. The displaced bytes get copied into a trampoline and re-executed, then the trampoline jumps back into the function past our patch.
 
@@ -38,7 +38,7 @@ Fingerprint: look for the instruction just after `cmp [ebp-0x08], 0 / jz exit` (
 
 ---
 
-## Current addresses in `NosCore.exe` (Entwell build)
+## Current addresses in `NostaleClientX.exe` (Entwell build)
 
 | Hook | Address | Flavour | Source of packet pointer |
 |---|---|---|---|
@@ -48,7 +48,7 @@ Fingerprint: look for the instruction just after `cmp [ebp-0x08], 0 / jz exit` (
 
 World send/recv were derived the same way as login recv — see the recipe below. The "dead ends" section at the bottom lists the approaches we walked through before landing on the current mid-function hook.
 
-The single [`Detour.Install`](../src/NosCore.PacketLogger.Hook/Detour.cs) entry point handles both flavours via the `HookArg` enum: `HookArg.Edx` for flavour A, `HookArg.Ebp` for flavour B (in which case the managed hook dereferences the local itself).
+The single [`Detour.Install`](../src/NosCore.DeveloperTools.Hook/Detour.cs) entry point handles both flavours via the `HookArg` enum: `HookArg.Edx` for flavour A, `HookArg.Ebp` for flavour B (in which case the managed hook dereferences the local itself).
 
 ---
 
@@ -71,7 +71,7 @@ For a new client phase (lobby, character select, in-game subsystem) that uses it
 
 ```
 # from the MCP:
-init "C:\Program Files (x86)\Nostale\NosCore.exe", EntwellNostaleClient
+init "C:\Program Files (x86)\Nostale\NostaleClientX.exe", EntwellNostaleClient
 ```
 
 Then `erun` until the target screen is visible.
@@ -91,7 +91,7 @@ Delphi's Indy layer may land on any of these. Covering all six avoids one missed
 
 ### 3. Find the connection object
 
-Trigger the action. When a winsock breakpoint fires, pull the call stack. The first `NosCore.exe` return address walking up from `ws2_32.*` is the client's socket pump. Read its `EBX` — that's the connection's `this` pointer.
+Trigger the action. When a winsock breakpoint fires, pull the call stack. The first `NostaleClientX.exe` return address walking up from `ws2_32.*` is the client's socket pump. Read its `EBX` — that's the connection's `this` pointer.
 
 Every Delphi `TClientCore` instance in NosTale has the same layout:
 
@@ -122,7 +122,7 @@ If Flavour B: find the *first* instruction immediately after `cmp [ebp-0x08], 0 
 
 ### 6. Take a signature and wire it up
 
-Pull enough bytes to be unique (usually 12–25 with no wildcards). Add to [`Signatures.cs`](../src/NosCore.PacketLogger.Hook/Signatures.cs) and install via `Detour.Install(addr, &Hook, prologueSize, arg)`:
+Pull enough bytes to be unique (usually 12–25 with no wildcards). Add to [`Signatures.cs`](../src/NosCore.DeveloperTools.Hook/Signatures.cs) and install via `Detour.Install(addr, &Hook, prologueSize, arg)`:
 
 - Flavour A: `arg: HookArg.Edx`, managed hook takes `IntPtr packetPtr` and calls `Capture`.
 - Flavour B: `arg: HookArg.Ebp`, managed hook takes `IntPtr ebp` and calls `Capture(direction, *(IntPtr*)(ebp - offset))`.
