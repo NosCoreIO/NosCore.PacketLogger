@@ -13,15 +13,19 @@ public sealed class MainForm : Form
     private readonly ProcessService _processService;
     private readonly IInjectionService _injection;
     private readonly PacketLogService _log;
+    private readonly PacketValidationService _validation;
     private AppSettings _settings;
 
     private readonly ToolStripStatusLabel _statusLabel = new() { Text = "No process attached." };
     private readonly ListBox _logListBox = new();
+    private readonly ListBox _issuesListBox = new();
     // High packet rates mean per-packet BeginInvoke + ListBox.Add would saturate the UI thread.
     // Capture threads enqueue here; a UI-thread timer drains the queue in one BeginUpdate/EndUpdate batch.
     private readonly ConcurrentQueue<LoggedPacket> _pendingPackets = new();
+    private readonly ConcurrentQueue<PacketValidationIssue> _pendingIssues = new();
     private readonly System.Windows.Forms.Timer _flushTimer = new() { Interval = 50 };
     private const int LogCap = 5000;
+    private const int IssuesCap = 5000;
     private readonly CheckBox _captureSendBox = new() { Text = "Capture Send", AutoSize = true };
     private readonly CheckBox _captureRecvBox = new() { Text = "Capture Recv", AutoSize = true };
     private readonly Button _clearButton = new() { Text = "Clear", AutoSize = true };
@@ -34,12 +38,14 @@ public sealed class MainForm : Form
         SettingsService settingsService,
         ProcessService processService,
         IInjectionService injection,
-        PacketLogService log)
+        PacketLogService log,
+        PacketValidationService validation)
     {
         _settingsService = settingsService;
         _processService = processService;
         _injection = injection;
         _log = log;
+        _validation = validation;
         _settings = _settingsService.Load();
 
         Text = "NosCore.DeveloperTools";
@@ -137,6 +143,12 @@ public sealed class MainForm : Form
         _logListBox.KeyDown += OnLogKeyDown;
         _logListBox.ContextMenuStrip = BuildLogContextMenu();
 
+        _issuesListBox.Dock = DockStyle.Fill;
+        _issuesListBox.IntegralHeight = false;
+        _issuesListBox.Font = new Font(FontFamily.GenericMonospace, 9F);
+        _issuesListBox.HorizontalScrollbar = true;
+        _issuesListBox.SelectionMode = SelectionMode.MultiExtended;
+
         var toolbar = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -157,7 +169,12 @@ public sealed class MainForm : Form
             _settings.PacketFilters.CaptureReceive = _captureRecvBox.Checked;
             Persist();
         };
-        _clearButton.Click += (_, _) => _log.Clear();
+        _clearButton.Click += (_, _) =>
+        {
+            _log.Clear();
+            while (_pendingIssues.TryDequeue(out _)) { }
+            _issuesListBox.Items.Clear();
+        };
         _filtersButton.Click += (_, _) => OpenFilters();
 
         toolbar.Controls.Add(_captureSendBox);
@@ -168,7 +185,15 @@ public sealed class MainForm : Form
 
         var injectBar = BuildInjectBar();
 
-        page.Controls.Add(_logListBox);
+        var subTabs = new TabControl { Dock = DockStyle.Fill };
+        var logPage = new TabPage("Log");
+        logPage.Controls.Add(_logListBox);
+        var issuesPage = new TabPage("Issues");
+        issuesPage.Controls.Add(_issuesListBox);
+        subTabs.TabPages.Add(logPage);
+        subTabs.TabPages.Add(issuesPage);
+
+        page.Controls.Add(subTabs);
         page.Controls.Add(injectBar);
         page.Controls.Add(toolbar);
         return page;
@@ -831,6 +856,11 @@ public sealed class MainForm : Form
             // Drop filtered packets at intake so they never reach the log at all.
             if (!ShouldCapture(args.Packet)) return;
             _log.Add(args.Packet);
+            var issue = _validation.Validate(args.Packet);
+            if (issue is not null)
+            {
+                _pendingIssues.Enqueue(issue);
+            }
         };
         _injection.StatusChanged += (_, msg) => BeginInvoke(() => _statusLabel.Text = msg);
 
@@ -850,31 +880,37 @@ public sealed class MainForm : Form
 
     private void FlushPendingPackets()
     {
-        if (_pendingPackets.IsEmpty) return;
+        FlushQueueInto(_pendingPackets, _logListBox, LogCap);
+        FlushQueueInto(_pendingIssues, _issuesListBox, IssuesCap);
+    }
+
+    private static void FlushQueueInto<T>(ConcurrentQueue<T> source, ListBox target, int cap)
+    {
+        if (source.IsEmpty) return;
 
         // Snapshot the queue to a local array so the batch add runs in a single
-        // BeginUpdate/EndUpdate block even if more packets arrive during the drain.
-        var buffer = new List<LoggedPacket>();
-        while (_pendingPackets.TryDequeue(out var p))
+        // BeginUpdate/EndUpdate block even if more items arrive during the drain.
+        var buffer = new List<T>();
+        while (source.TryDequeue(out var item))
         {
-            buffer.Add(p);
+            buffer.Add(item!);
         }
         if (buffer.Count == 0) return;
 
-        _logListBox.BeginUpdate();
+        target.BeginUpdate();
         try
         {
-            _logListBox.Items.AddRange(buffer.ToArray());
-            var excess = _logListBox.Items.Count - LogCap;
+            target.Items.AddRange(buffer.Cast<object>().ToArray());
+            var excess = target.Items.Count - cap;
             for (var i = 0; i < excess; i++)
             {
-                _logListBox.Items.RemoveAt(0);
+                target.Items.RemoveAt(0);
             }
-            _logListBox.TopIndex = Math.Max(0, _logListBox.Items.Count - 1);
+            target.TopIndex = Math.Max(0, target.Items.Count - 1);
         }
         finally
         {
-            _logListBox.EndUpdate();
+            target.EndUpdate();
         }
     }
 
