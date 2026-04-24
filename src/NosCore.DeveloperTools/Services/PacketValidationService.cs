@@ -29,6 +29,7 @@ public sealed class PacketValidationService
         var all = typeof(PacketBase).Assembly
             .GetTypes()
             .Where(t => t is { IsAbstract: false, IsClass: true })
+            .Where(t => typeof(PacketBase).IsAssignableFrom(t))
             .Where(t => t.GetCustomAttribute<PacketHeaderAttribute>() != null)
             .ToList();
 
