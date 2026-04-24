@@ -26,21 +26,37 @@ public sealed class PacketValidationService
 
     public PacketValidationService()
     {
-        var all = typeof(PacketBase).Assembly
+        var allPacketBase = typeof(PacketBase).Assembly
             .GetTypes()
             .Where(t => t is { IsAbstract: false, IsClass: true })
             .Where(t => typeof(PacketBase).IsAssignableFrom(t))
+            .ToList();
+
+        // Header-bearing types are the top-level packets, split by direction.
+        var clientHeadered = allPacketBase
+            .Where(t => t.Namespace?.Contains("ClientPackets") == true)
+            .Where(t => t.GetCustomAttribute<PacketHeaderAttribute>() != null)
+            .ToList();
+        var serverHeadered = allPacketBase
+            .Where(t => t.Namespace?.Contains("ServerPackets") == true)
             .Where(t => t.GetCustomAttribute<PacketHeaderAttribute>() != null)
             .ToList();
 
-        var clientTypes = all.Where(t => t.Namespace?.Contains("ClientPackets") == true).ToList();
-        var serverTypes = all.Where(t => t.Namespace?.Contains("ServerPackets") == true).ToList();
+        // Sub-packet types have no [PacketHeader] — the Deserializer keys them by
+        // typeof(T).Name. They're not direction-specific, so feed them to both
+        // deserializers; otherwise DeserializeValue crashes on 'The given key
+        // <SubPacket> was not present in the dictionary.'
+        var subpackets = allPacketBase
+            .Where(t => t.GetCustomAttribute<PacketHeaderAttribute>() == null)
+            .ToList();
 
-        _clientDeserializer = new Deserializer(clientTypes);
-        _serverDeserializer = new Deserializer(serverTypes);
+        _clientDeserializer = new Deserializer(clientHeadered.Concat(subpackets));
+        _serverDeserializer = new Deserializer(serverHeadered.Concat(subpackets));
 
-        _clientHeaders = new HashSet<string>(clientTypes.SelectMany(HeadersOf), StringComparer.Ordinal);
-        _serverHeaders = new HashSet<string>(serverTypes.SelectMany(HeadersOf), StringComparer.Ordinal);
+        // Only headered types drive the direction-match check; sub-packets never
+        // appear as top-level headers on the wire.
+        _clientHeaders = new HashSet<string>(clientHeadered.SelectMany(HeadersOf), StringComparer.Ordinal);
+        _serverHeaders = new HashSet<string>(serverHeadered.SelectMany(HeadersOf), StringComparer.Ordinal);
     }
 
     public PacketValidationIssue? Validate(LoggedPacket packet)
