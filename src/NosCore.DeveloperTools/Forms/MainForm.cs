@@ -140,6 +140,13 @@ public sealed class MainForm : Form
         _logListBox.Font = new Font(FontFamily.GenericMonospace, 9F);
         _logListBox.HorizontalScrollbar = true;
         _logListBox.SelectionMode = SelectionMode.MultiExtended;
+        _logListBox.DrawMode = DrawMode.OwnerDrawFixed;
+        _logListBox.ItemHeight = _logListBox.Font.Height + 2;
+        // OwnerDraw disables ListBox's auto-measuring of item width, so pick a large
+        // static extent covering anything we realistically capture (raw packets rarely
+        // exceed ~500 chars × ~7 px/char).
+        _logListBox.HorizontalExtent = 4000;
+        _logListBox.DrawItem += LogListBox_DrawItem;
         _logListBox.KeyDown += OnListKeyDown;
         _logListBox.ContextMenuStrip = BuildListContextMenu(_logListBox);
 
@@ -857,12 +864,14 @@ public sealed class MainForm : Form
         {
             // Drop filtered packets at intake so they never reach the log at all.
             if (!ShouldCapture(args.Packet)) return;
-            _log.Add(args.Packet);
+            // Stamp Issue before enqueueing so the Log flush sees the flag on first draw.
             var issue = _validation.Validate(args.Packet);
             if (issue is not null)
             {
+                args.Packet.Issue = issue.Category;
                 _pendingIssues.Enqueue(issue);
             }
+            _log.Add(args.Packet);
         };
         _injection.StatusChanged += (_, msg) => BeginInvoke(() => _statusLabel.Text = msg);
 
@@ -952,6 +961,39 @@ public sealed class MainForm : Form
             e.SuppressKeyPress = true;
             e.Handled = true;
         }
+    }
+
+    private void LogListBox_DrawItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || e.Index >= _logListBox.Items.Count) return;
+        e.DrawBackground();
+
+        const int stripeWidth = 4;
+        var packet = _logListBox.Items[e.Index] as LoggedPacket;
+        if (packet?.Issue is { } category)
+        {
+            var color = category switch
+            {
+                ValidationCategory.Missing => Color.Gold,
+                ValidationCategory.WrongStructure => Color.IndianRed,
+                ValidationCategory.WrongTag => Color.DarkOrange,
+                _ => Color.Transparent,
+            };
+            using var brush = new SolidBrush(color);
+            e.Graphics.FillRectangle(brush, e.Bounds.Left, e.Bounds.Top, stripeWidth, e.Bounds.Height);
+        }
+
+        var fg = (e.State & DrawItemState.Selected) != 0 ? SystemColors.HighlightText : SystemColors.WindowText;
+        var textBounds = new Rectangle(
+            e.Bounds.Left + stripeWidth + 2, e.Bounds.Top,
+            e.Bounds.Width - stripeWidth - 2, e.Bounds.Height);
+        TextRenderer.DrawText(
+            e.Graphics,
+            packet?.ToString() ?? _logListBox.Items[e.Index]?.ToString() ?? string.Empty,
+            e.Font ?? _logListBox.Font,
+            textBounds, fg,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        e.DrawFocusRectangle();
     }
 
     private static void SelectAll(ListBox list)

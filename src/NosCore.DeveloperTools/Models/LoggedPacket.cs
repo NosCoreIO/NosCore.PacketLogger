@@ -21,6 +21,9 @@ public sealed record LoggedPacket(
 {
     private readonly string _display = FormatDisplay(Timestamp, Connection, Direction, Raw);
 
+    /// <summary>Set by <c>PacketValidationService</c> when validation flags this packet. Drives the Log tab's issue indicator.</summary>
+    public ValidationCategory? Issue { get; set; }
+
     public override string ToString() => _display;
 
     private static string FormatDisplay(DateTime ts, PacketConnection conn, PacketDirection dir, string raw)
