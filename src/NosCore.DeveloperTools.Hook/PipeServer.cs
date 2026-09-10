@@ -31,6 +31,15 @@ internal static class PipeServer
         Hooks.Queue.Enqueue(new CapturedPacket(PacketDirection.Status, PacketConnection.World, "STATUS " + message));
     }
 
+    /// <summary>
+    /// Emit a line verbatim, for command replies that carry their own
+    /// prefix and are meant to be parsed rather than shown as status.
+    /// </summary>
+    private static void Reply(string line)
+    {
+        Hooks.Queue.Enqueue(new CapturedPacket(PacketDirection.Status, PacketConnection.World, line));
+    }
+
     public static void Run()
     {
         var pipeName = $"NosCore.DeveloperTools.{Environment.ProcessId}";
@@ -110,6 +119,24 @@ internal static class PipeServer
             return;
         }
 
+        if (line.StartsWith("WALK ", StringComparison.Ordinal))
+        {
+            HandleWalk(line[5..]);
+            return;
+        }
+
+        if (line.StartsWith("POS", StringComparison.Ordinal))
+        {
+            HandlePosition();
+            return;
+        }
+
+        if (line.StartsWith("DIAG", StringComparison.Ordinal))
+        {
+            HandleDiagnostics();
+            return;
+        }
+
         // "INJECT <S|R> <W|L> <payload>" — 11 chars minimum before payload.
         if (!line.StartsWith("INJECT ", StringComparison.Ordinal) || line.Length < 12) return;
 
@@ -150,6 +177,65 @@ internal static class PipeServer
             Announce($"inject error: {ex.Message}");
         }
     }
+
+    private static void HandleWalk(string args)
+    {
+        var parts = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is not (2 or 4)
+            || !ushort.TryParse(parts[0], out var x)
+            || !ushort.TryParse(parts[1], out var y))
+        {
+            Reply("WALKRESULT bad-arguments");
+            return;
+        }
+
+        (int Un0, int Un1)? extra = null;
+        if (parts.Length == 4)
+        {
+            if (!int.TryParse(parts[2], out var un0) || !int.TryParse(parts[3], out var un1))
+            {
+                Reply("WALKRESULT bad-arguments");
+                return;
+            }
+
+            extra = (un0, un1);
+        }
+
+        var reason = Hooks.Walk(x, y, extra) switch
+        {
+            WalkResult.Ok => "ok",
+            WalkResult.NoWalkFunction => "walk-signature-not-found",
+            WalkResult.NoPlayerManager => "player-manager-signature-not-found",
+            WalkResult.NotInWorld => "not-in-world",
+            WalkResult.NoClientThread => "client-thread-unavailable",
+            _ => "unknown",
+        };
+        Reply("WALKRESULT " + reason);
+    }
+
+    private static void HandlePosition()
+    {
+        if (!Hooks.TryGetPosition(out var id, out var x, out var y))
+        {
+            Reply("POS unavailable");
+            return;
+        }
+
+        Reply($"POS {id} {x} {y}");
+    }
+
+    private static void HandleDiagnostics()
+    {
+        var install = Hooks.LastInstall;
+        var inWorld = PlayerManager.TryGetManager(out var manager);
+        var periodic = install.PeriodicHooked ? Fmt(install.PeriodicAddress) : Fmt(install.PeriodicAddress) + "(not-hooked)";
+
+        Reply($"DIAG ticks={NosThreadSynchronizer.Ticks} periodic={periodic} " +
+            $"manager-slot={Fmt(install.PlayerManagerStaticAddress)} manager={Fmt(manager)} " +
+            $"walk={Fmt(install.WalkAddress)} in-world={inWorld}");
+    }
+
+    private static string Fmt(IntPtr address) => address == IntPtr.Zero ? "none" : $"0x{address.ToInt64():X}";
 
     private static void HandleNosMallUrl()
     {

@@ -39,4 +39,56 @@ internal static class Signatures
     // managed side can dereference [EBP-0x08] itself.
     public const string LoginRecv =
         "8D 45 F4 50 8D 55 F8 B1 20 8B 45 F8";
+
+    // Periodic: a function the client calls every frame from its main
+    // thread. We hook it purely as a scheduling tick — the detour body
+    // drains work queued by our pipe thread so client functions always
+    // execute on the thread that owns the game state.
+    //
+    //   push ebp               ; 55
+    //   mov ebp, esp           ; 8B EC
+    //   push ebx               ; 53
+    //   push esi               ; 56
+    //   add esp, <imm8>        ; 83 C4 ??
+    //
+    // Only the first 5 bytes are displaced: `add esp, imm8` is 3 bytes,
+    // so a 6-byte detour would split it and the trampoline would return
+    // into the middle of an instruction.
+    public const string Periodic = "55 8B EC 53 56 83 C4";
+
+    public const int PeriodicPrologueSize = 5;
+
+    // PlayerManager: locates a code site that loads the manager's static
+    // slot, rather than the slot itself — the slot holds no distinctive
+    // bytes to scan for.
+    //
+    //   xor ecx, ecx           ; 33 C9
+    //   mov edx, [ebp-0x04]    ; 8B 55 FC
+    //   mov eax, [<static>]    ; A1 ?? ?? ?? ??
+    //   call <...>             ; E8 ?? ?? ?? ??
+    //
+    // The A1 opcode sits at match+5, so its imm32 operand — the static
+    // address — is at match+6. That slot in turn holds the live manager
+    // pointer, which is null until the character is in-world.
+    public const string PlayerManager = "33 C9 8B 55 FC A1 ?? ?? ?? ?? E8 ?? ?? ?? ??";
+
+    public const int PlayerManagerStaticOperandOffset = 6;
+
+    // Walk: the client's own movement routine. Calling it (rather than
+    // emitting a `walk` packet ourselves) makes the client update its
+    // local position, run its animation, and compute the packet's
+    // checksum itself — so what reaches the server is byte-identical to
+    // a real player's movement.
+    //
+    //   push ebp               ; 55
+    //   mov ebp, esp           ; 8B EC
+    //   add esp, -0x14         ; 83 C4 EC
+    //   push ebx               ; 53
+    //   push esi               ; 56
+    //   push edi               ; 57
+    //   mov [ebp-0x06], cx     ; 66 89 4D FA
+    //
+    // Delphi register convention: EAX = manager, EDX = packed position
+    // ((y << 16) | x). Never detoured, only called.
+    public const string PlayerWalk = "55 8B EC 83 C4 EC 53 56 57 66 89 4D FA";
 }

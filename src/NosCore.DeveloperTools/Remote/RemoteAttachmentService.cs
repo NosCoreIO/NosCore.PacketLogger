@@ -22,6 +22,8 @@ public sealed class RemoteAttachmentService : IInjectionService
 
     public event EventHandler<string>? NosMallUrlReceived;
 
+    public event EventHandler<string>? ControlReplyReceived;
+
     public bool IsAttached => _process is not null;
 
     public int? AttachedProcessId => _process?.ProcessId;
@@ -95,6 +97,25 @@ public sealed class RemoteAttachmentService : IInjectionService
         return _session.SendCommand("NOSMALLURL");
     }
 
+    public bool Walk(ushort x, ushort y, int? un0 = null, int? un1 = null)
+    {
+        if (_session is null) return false;
+        var command = un0 is { } a && un1 is { } b ? $"WALK {x} {y} {a} {b}" : $"WALK {x} {y}";
+        return _session.SendCommand(command);
+    }
+
+    public bool RequestPosition()
+    {
+        if (_session is null) return false;
+        return _session.SendCommand("POS");
+    }
+
+    public bool RequestDiagnostics()
+    {
+        if (_session is null) return false;
+        return _session.SendCommand("DIAG");
+    }
+
     public async Task DetachAsync()
     {
         await DetachInternalAsync();
@@ -143,6 +164,14 @@ public sealed class RemoteAttachmentService : IInjectionService
         if (line.StartsWith("STATUS ", StringComparison.Ordinal))
         {
             RaiseStatus(line[7..]);
+            return;
+        }
+
+        if (line.StartsWith("POS", StringComparison.Ordinal)
+            || line.StartsWith("WALKRESULT ", StringComparison.Ordinal)
+            || line.StartsWith("DIAG ", StringComparison.Ordinal))
+        {
+            ControlReplyReceived?.Invoke(this, line);
             return;
         }
 
