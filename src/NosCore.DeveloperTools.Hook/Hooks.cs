@@ -25,10 +25,12 @@ internal static unsafe class Hooks
 
     public static readonly ConcurrentQueue<CapturedPacket> Queue = new();
     public static int QueueDropped;
+    public static InstallResult LastInstall;
 
     private static IntPtr _sendTrampoline;
     private static IntPtr _recvTrampoline;
     private static IntPtr _loginRecvTrampoline;
+    private static IntPtr _periodicTrampoline;
 
     // Invoker thunks for re-entering the client's own send/recv functions
     // (Delphi register convention). Cached after scanning.
@@ -78,7 +80,55 @@ internal static unsafe class Hooks
             result.LoginRecvHooked = _loginRecvTrampoline != IntPtr.Zero;
         }
 
+        var periodicAddr = PatternScanner.ScanMainModule(Signatures.Periodic);
+        result.PeriodicAddress = periodicAddr;
+        if (periodicAddr != IntPtr.Zero)
+        {
+            delegate* unmanaged[Stdcall]<void> periodicHook = &HookedPeriodic;
+            _periodicTrampoline = Detour.Install(periodicAddr, (IntPtr)periodicHook,
+                prologueSize: Signatures.PeriodicPrologueSize, arg: Detour.HookArg.None);
+            result.PeriodicHooked = _periodicTrampoline != IntPtr.Zero;
+            if (result.PeriodicHooked)
+            {
+                NosThreadSynchronizer.MarkInstalled();
+            }
+        }
+
+        PlayerManager.Resolve();
+        result.PlayerManagerStaticAddress = PlayerManager.StaticAddress;
+        result.WalkAddress = PlayerManager.WalkAddress;
+
+        LastInstall = result;
         return result;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+    private static void HookedPeriodic() => NosThreadSynchronizer.Tick();
+
+    public static WalkResult Walk(ushort x, ushort y, (int Un0, int Un1)? extraArgs) =>
+        PlayerManager.Walk(x, y, extraArgs);
+
+    /// <summary>
+    /// Reads the character's position on the client thread where
+    /// possible, so a position sampled mid-move can't be a torn read of
+    /// coordinates the frame loop is writing.
+    /// </summary>
+    public static bool TryGetPosition(out int id, out ushort x, out ushort y)
+    {
+        var readId = 0;
+        ushort readX = 0;
+        ushort readY = 0;
+        var read = false;
+
+        if (NosThreadSynchronizer.Invoke(() => read = PlayerManager.TryGetPosition(out readId, out readX, out readY)))
+        {
+            id = readId;
+            x = readX;
+            y = readY;
+            return read;
+        }
+
+        return PlayerManager.TryGetPosition(out id, out x, out y);
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
@@ -151,14 +201,29 @@ internal static unsafe class Hooks
         try
         {
             var ansi = ClientInvoker.AllocAnsiString(packet);
-            var invoker = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)invokerPtr;
-            invoker(ctx, ansi);
+
+            // Prefer the client's own thread. The direct call is kept as a
+            // fallback so injection still works if the periodic signature
+            // drifts — it races the frame loop, which is survivable for
+            // send/recv but is why movement never takes this path.
+            if (NosThreadSynchronizer.Invoke(() => CallInvoker(invokerPtr, ctx, ansi)))
+            {
+                return true;
+            }
+
+            CallInvoker(invokerPtr, ctx, ansi);
             return true;
         }
         catch
         {
             return false;
         }
+    }
+
+    private static void CallInvoker(IntPtr invokerPtr, IntPtr ctx, IntPtr ansi)
+    {
+        var invoker = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void>)invokerPtr;
+        invoker(ctx, ansi);
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
@@ -198,6 +263,10 @@ internal static unsafe class Hooks
 
 internal struct InstallResult
 {
+    public IntPtr PeriodicAddress;
+    public IntPtr PlayerManagerStaticAddress;
+    public IntPtr WalkAddress;
+    public bool PeriodicHooked;
     public IntPtr SendAddress;
     public IntPtr RecvAddress;
     public IntPtr LoginRecvAddress;

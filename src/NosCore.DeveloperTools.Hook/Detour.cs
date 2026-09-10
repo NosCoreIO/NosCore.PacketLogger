@@ -56,12 +56,15 @@ internal static unsafe class Detour
     /// <see cref="EaxThenEdx"/> — 2-arg hook receiving (EAX, EDX);
     /// useful for send handlers where we want both the Delphi "self"
     /// context and the packet pointer.
+    /// <see cref="None"/> — 0-arg hook, for detours placed purely to
+    /// borrow the target's thread rather than to read its arguments.
     /// </summary>
     public enum HookArg : byte
     {
         Edx,
         Ebp,
         EaxThenEdx,
+        None,
     }
 
     public static IntPtr Install(IntPtr target, IntPtr hook, int prologueSize = 6, HookArg arg = HookArg.Edx)
@@ -70,7 +73,12 @@ internal static unsafe class Detour
         if (prologueSize < 5) return IntPtr.Zero;
 
         // Args section size: PUSH EDX / PUSH EBP = 1 byte; PUSH EDX + PUSH EAX = 2 bytes.
-        var argsSize = arg == HookArg.EaxThenEdx ? 2 : 1;
+        var argsSize = arg switch
+        {
+            HookArg.EaxThenEdx => 2,
+            HookArg.None => 0,
+            _ => 1,
+        };
         var trampolineSize = 1 + 1 + argsSize + 5 + 1 + 1 + prologueSize + 5;
         var trampoline = VirtualAlloc(IntPtr.Zero, (UIntPtr)trampolineSize,
             AllocationType.Commit | AllocationType.Reserve, MemoryProtection.ReadWrite);
@@ -91,6 +99,8 @@ internal static unsafe class Detour
                 break;
             case HookArg.Ebp:
                 t[pos++] = 0x55;              // PUSH EBP
+                break;
+            case HookArg.None:
                 break;
             case HookArg.EaxThenEdx:
                 // stdcall pushes args right-to-left; arg1=EAX must be topmost,
